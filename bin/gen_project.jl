@@ -95,25 +95,37 @@ else
 end
 isempty(ARGS) && (push!(ARGS, pwd()))
 
+function check_empty(p::Pkg.Types.Project)
+    for f in fieldnames(Pkg.Types.Project)
+        val = getfield(p, f)
+        val === nothing || isempty(val) || return false
+    end
+    true
+end
+
 for arg in ARGS
     dir = abspath(expanduser(arg))
-    isdir(dir) ||
+    if !isdir(dir)
         @error "$arg does not appear to be a package (not a directory)"
+        continue
+    end
 
     name = basename(dir)
     if isempty(name)
         dir = dirname(dir)
+        if !isdir(dir)
+            @error "$arg does not appear to be a package (not a directory)"
+            continue
+        end
         name = basename(dir)
     end
     endswith(name, ".jl") && (name = chop(name, tail=3))
 
-    project_file = joinpath(dir, "Project.toml")
-    !force && isfile(project_file) &&
-        @error "$arg already has a project file"
-
     require_file = joinpath(dir, "REQUIRE")
-    isfile(require_file) ||
+    if !isfile(require_file)
         @error "$arg does not appear to be a package (no REQUIRE file)"
+        continue
+    end
 
     project = Dict(
         "name" => name,
@@ -152,10 +164,25 @@ for arg in ARGS
         haskey(project["deps"], "Test") && delete!(project["deps"], "Test")
     end
 
-    println(stderr, "Generating project file for $name: $project_file")
-    open(project_file, "w") do io
-        Pkg.TOML.print(io, project, sorted=true)
+    project_file = joinpath(dir, "Project.toml")
+    oldproject = Pkg.Types.read_project(project_file)
+    if check_empty(oldproject)
+        println(stderr, "Generating project file for $name: $project_file")
+        Pkg.Types.write_project(Pkg.Types.Project(project), project_file)
+    elseif force
+        println(stderr, "Overwriting project file for $name: $project_file")
+        Pkg.Types.write_project(Pkg.Types.Project(project), project_file)
+    elseif isempty(oldproject.compat)
+        if isempty(project["compat"])
+            println(stderr, "No changes needed to $name: $project_file")
+            continue
+        end
+        println(stderr, "Adding compat section to $name: $project_file")
+        open(project_file, "a") do io
+            println(io)
+            Pkg.TOML.print(io, Dict("compat" => project["compat"]))
+        end
+    else
+        @error "$name: $project_file already has a [compat] section"
     end
-    project = Pkg.Types.read_project(project_file)
-    Pkg.Types.write_project(project, project_file)
 end
